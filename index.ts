@@ -2,31 +2,47 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
 export default function extensionReloaderExtension(pi: ExtensionAPI) {
+  let reloadRequested = false;
+
   pi.registerCommand("reload-runtime", {
     description: "Reload extensions, skills, prompts, themes, and context files",
     handler: async (_args, ctx) => {
       ctx.ui.notify("Reloading Pi runtime...", "info");
       await ctx.reload();
+      return;
     },
+  });
+
+  pi.on("agent_settled", () => {
+    if (!reloadRequested) return;
+    reloadRequested = false;
+    pi.sendUserMessage("/reload-runtime", {
+      expandPromptTemplates: true,
+    });
   });
 
   pi.registerTool({
     name: "reload_runtime",
-    label: "Request Pi runtime reload",
-    description:
-      "Request a runtime reload after editing Pi resources. This tool does not enqueue `/reload-runtime`, because extension-originated user messages bypass command dispatch in Pi 0.81.1 and can create a self-reinforcing tool loop. It returns the manual command that must be run once after the current turn. Never call this tool in response to a literal `/reload-runtime` message.",
+    label: "Reload Pi Runtime",
+    description: "Reload extensions, skills, prompts, themes, and context files after editing them",
+    promptSnippet: "Reload Pi resources after editing extensions, skills, prompts, themes, or context files",
+    promptGuidelines: [
+      "Call reload_runtime once after editing Pi resources so the current session uses the changes.",
+    ],
     parameters: Type.Object({
-      reason: Type.String({ description: "Why the reload is being requested" }),
+      reason: Type.String({ description: "Why the reload is needed" }),
     }),
     async execute(_toolCallId, params) {
+      reloadRequested = true;
       return {
         content: [
           {
             type: "text",
-            text: `Reload requested: ${params.reason}\nRun /reload-runtime once as a user command after this turn. It was not queued automatically.`,
+            text: `Pi runtime reload will run after the current agent run settles: ${params.reason}`,
           },
         ],
-        details: { queued: false, command: "/reload-runtime", reason: params.reason },
+        details: { command: "/reload-runtime", reason: params.reason },
+        terminate: true,
       };
     },
   });
