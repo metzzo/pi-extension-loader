@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
 import {
   cpSync,
   mkdtempSync,
@@ -16,30 +15,9 @@ import test from "node:test";
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const extensionPath = join(repositoryRoot, "index.ts");
 
-function findPiPackageRoot() {
-  const configuredExecutable = process.env.PI_EXECUTABLE ?? "pi";
-  const executable = configuredExecutable.includes("/")
-    ? configuredExecutable
-    : execFileSync("which", [configuredExecutable], { encoding: "utf8" }).trim();
-
-  let directory = dirname(realpathSync(executable));
-  while (true) {
-    try {
-      const manifest = JSON.parse(readFileSync(join(directory, "package.json"), "utf8"));
-      if (manifest.name === "@earendil-works/pi-coding-agent") return directory;
-    } catch (error) {
-      if (error?.code !== "ENOENT") throw error;
-    }
-
-    const parent = dirname(directory);
-    if (parent === directory) break;
-    directory = parent;
-  }
-
-  throw new Error(`Could not locate the pi-coding-agent package from ${executable}`);
-}
-
-const piPackageRoot = findPiPackageRoot();
+const piPackageRoot = realpathSync(
+  join(repositoryRoot, "node_modules", "@earendil-works", "pi-coding-agent"),
+);
 const {
   createAgentSession,
   DefaultResourceLoader,

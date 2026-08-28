@@ -1,43 +1,95 @@
 # Pi Extension Reloader
 
-Reload Pi resources without restarting the session. The package adds:
+A [Pi](https://github.com/earendil-works/pi) extension that reloads extensions, skills, prompt templates, themes, and context files without restarting the current session.
 
-- `/reload-runtime` for a manual reload
-- `reload_runtime` for an agent-requested reload after it edits Pi resources
+It provides two entry points:
 
-Both paths reload extensions, skills, prompt templates, themes, and context files.
+| Entry point | Intended caller | Behavior |
+| --- | --- | --- |
+| `/reload-runtime` | User | Runs Pi's native runtime reload immediately. |
+| `reload_runtime` | Agent | Requests one reload after the active agent run settles. |
 
-## Install
+## Requirements
 
-From this directory:
+- Pi 0.84.2 (the pinned release-test baseline)
+- Node.js 22.19.0 or newer
+
+The package keeps Pi and TypeBox as `"*"` peer dependencies, as Pi's package documentation requires for bundled extension APIs. Development and packaged-consumer tests pin Pi and TypeBox to the versions used for this release so the release gate does not float with those peers.
+
+## Installation
+
+Install the npm release for the current user:
 
 ```bash
-pi install .
+pi install npm:pi-extension-reloader
 ```
 
-Run `/reload` once if Pi was already open when the package was installed. New sessions load it automatically.
+Update or remove it with Pi's package manager:
 
-## Use
+```bash
+pi update npm:pi-extension-reloader
+pi remove npm:pi-extension-reloader
+```
 
-Run the command directly:
+Install the matching Git tag instead:
+
+```bash
+pi install git:github.com/metzzo/pi-extension-reloader@v0.1.1
+```
+
+For local development, install this checkout by absolute path:
+
+```bash
+pi install /absolute/path/to/pi-extension-reloader
+```
+
+If Pi was already open during installation, run `/reload` once. New sessions discover the package automatically.
+
+Pi extensions execute with the user's full permissions. Review the source and [security policy](SECURITY.md) before installing.
+
+## Usage
+
+Run a reload directly:
 
 ```text
 /reload-runtime
 ```
 
-The agent can call `reload_runtime` after changing a Pi resource. Once the agent run settles, the extension dispatches `/reload-runtime` with command expansion enabled. Waiting for settlement prevents the reload from invalidating the tool while it is still returning its result.
+The agent can call `reload_runtime` after editing a Pi extension, skill, prompt template, theme, or context file. The tool records the request and returns with `terminate: true`. When Pi emits `agent_settled`, the extension dispatches `/reload-runtime` with command expansion enabled.
+
+The settlement boundary matters: reloading inside the tool's `execute()` method would invalidate the extension context before Pi finishes wrapping the tool result. Deferring the command lets the tool and any sibling work finish before Pi replaces the runtime.
 
 ## Development
 
+Development tests and helpers are intentionally omitted from the npm tarball. Clone the source repository before running these commands.
+
+Install the locked toolchain and run the deterministic release gate:
+
 ```bash
-npm test
-npm run smoke
+npm ci
+npm run release:check
 ```
 
-The live end-to-end test runs the real plugin through Pi RPC with `openai-codex/gpt-5.6-luna` at `low` thinking. It requires configured OpenAI Codex credentials:
+The gate performs:
+
+- strict TypeScript checking
+- real Pi runtime tests for command and tool registration
+- a packaged-consumer smoke test against Pi 0.84.2
+- an offline Pi loading smoke test
+- a production-dependency security audit
+
+Run the authenticated end-to-end test separately:
 
 ```bash
 npm run test:e2e
 ```
 
-Its raw RPC and stderr artifacts are saved under `.test-workspaces/`.
+It runs the real plugin through Pi RPC using `openai-codex/gpt-5.6-luna` at `low` thinking. It verifies the model calls `reload_runtime`, the command dispatches, and a changed extension receives `session_start` with reason `reload`.
+
+The test copies `auth.json` and `models-store.json` from `~/.pi/agent` into a temporary agent directory, makes one live model request, and removes the directory afterward. Override the source with `PI_E2E_SOURCE_AGENT_DIR` or the executable with `PI_EXECUTABLE`. Raw RPC and stderr evidence is written under `.test-workspaces/`.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution guidance and [RELEASING.md](RELEASING.md) for the maintainer checklist.
+
+## License
+
+[MIT](LICENSE) © 2026 Robert Fischer
