@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
@@ -75,62 +75,35 @@ try {
   );
 
   const packageRoot = join(consumerDirectory, "node_modules", "pi-extension-reloader");
-  const manifest = JSON.parse(await readFile(join(packageRoot, "package.json"), "utf8"));
-  if (manifest.private === true || manifest.publishConfig?.access !== "public") {
-    throw new Error("packed manifest is not configured for public publication");
-  }
-  if (manifest.license !== "MIT" || !manifest.keywords?.includes("pi-package")) {
-    throw new Error("packed manifest is missing its public license or pi-package keyword");
-  }
-  if (JSON.stringify(manifest.pi?.extensions) !== JSON.stringify(["./index.ts"])) {
-    throw new Error("packed manifest does not declare index.ts as its Pi extension");
-  }
-
   const piRoot = join(consumerDirectory, "node_modules", "@earendil-works", "pi-coding-agent");
-  const pi = await import(pathToFileURL(join(piRoot, "dist", "index.js")).href);
-  const { loadExtensions } = await import(
-    pathToFileURL(join(piRoot, "dist", "core", "extensions", "loader.js")).href
-  );
-  const { DefaultPackageManager } = await import(
-    pathToFileURL(join(piRoot, "dist", "core", "package-manager.js")).href
-  );
-  const { SettingsManager } = await import(
-    pathToFileURL(join(piRoot, "dist", "core", "settings-manager.js")).href
+  const { DefaultResourceLoader, SettingsManager } = await import(
+    pathToFileURL(join(piRoot, "dist", "index.js")).href
   );
 
+  // Drive discovery and loading through Pi's public resource loader; a missing
+  // pi.extensions declaration or a load failure surfaces here.
   const agentDirectory = join(workspace, "agent");
   await mkdir(agentDirectory, { recursive: true });
   const settingsManager = SettingsManager.create(consumerDirectory, agentDirectory);
   settingsManager.setProjectTrusted(true);
-  const packageManager = new DefaultPackageManager({
+  const resourceLoader = new DefaultResourceLoader({
     cwd: consumerDirectory,
     agentDir: agentDirectory,
     settingsManager,
+    additionalExtensionPaths: [packageRoot],
   });
-  const resources = await packageManager.resolveExtensionSources([packageRoot], { temporary: true });
-  const extensionPaths = resources.extensions
-    .filter((resource) => resource.enabled)
-    .map((resource) => resource.path);
-  if (extensionPaths.length !== 1) {
-    throw new Error(`Pi package discovery found ${extensionPaths.length} extensions instead of one`);
-  }
-
-  const loaded = await loadExtensions(
-    extensionPaths,
-    consumerDirectory,
-    pi.createEventBus(),
-    pi.createExtensionRuntime(),
-  );
-  if (loaded.errors.length > 0) {
+  await resourceLoader.reload();
+  const { extensions, errors } = resourceLoader.getExtensions();
+  if (errors.length > 0) {
     throw new Error(
-      `packed extension failed to load: ${loaded.errors.map((error) => error.error ?? error).join("; ")}`,
+      `packed extension failed to load: ${errors.map((error) => error.error ?? error).join("; ")}`,
     );
   }
-  if (loaded.extensions.length !== 1) {
-    throw new Error(`Pi loaded ${loaded.extensions.length} extensions instead of one`);
+  if (extensions.length !== 1) {
+    throw new Error(`Pi loaded ${extensions.length} extensions instead of one`);
   }
 
-  const [extension] = loaded.extensions;
+  const [extension] = extensions;
   if (!extension.commands.has("reload-runtime") || !extension.tools.has("reload_runtime")) {
     throw new Error("packed extension did not register reload-runtime and reload_runtime");
   }
