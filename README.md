@@ -34,7 +34,7 @@ pi remove npm:pi-extension-reloader
 Install the matching Git tag instead:
 
 ```bash
-pi install git:github.com/metzzo/pi-extension-reloader@v0.1.1
+pi install git:github.com/metzzo/pi-extension-loader@v0.1.1
 ```
 
 For local development, install this checkout by absolute path:

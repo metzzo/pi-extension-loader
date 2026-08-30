@@ -11,13 +11,13 @@
   ],
   "author": "Robert Fischer",
   "license": "MIT",
-  "homepage": "https://github.com/metzzo/pi-extension-reloader#readme",
+  "homepage": "https://github.com/metzzo/pi-extension-loader#readme",
   "bugs": {
-    "url": "https://github.com/metzzo/pi-extension-reloader/issues"
+    "url": "https://github.com/metzzo/pi-extension-loader/issues"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/metzzo/pi-extension-reloader.git"
+    "url": "git+https://github.com/metzzo/pi-extension-loader.git"
   },
   "files": [
     "index.ts",

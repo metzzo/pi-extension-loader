@@ -1,7 +1,7 @@
 # Releasing
 
 1. Confirm the working tree is clean and the intended commit is checked out.
-2. Confirm `https://github.com/metzzo/pi-extension-reloader` exists, is public, and is configured as `origin`.
+2. Confirm `https://github.com/metzzo/pi-extension-loader` exists, is public, and is configured as `origin`.
 3. Confirm the npm package name is still available or owned by the publisher:
 
    ```bash

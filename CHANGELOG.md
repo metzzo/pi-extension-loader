@@ -19,5 +19,5 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Dispatch the reload request as an extension command instead of sending a literal command-shaped model prompt.
 
-[Unreleased]: https://github.com/metzzo/pi-extension-reloader/compare/v0.1.1...HEAD
-[0.1.1]: https://github.com/metzzo/pi-extension-reloader/releases/tag/v0.1.1
+[Unreleased]: https://github.com/metzzo/pi-extension-loader/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/metzzo/pi-extension-loader/releases/tag/v0.1.1
