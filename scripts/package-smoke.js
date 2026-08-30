@@ -49,10 +49,8 @@ try {
 
   const expectedFiles = [
     "CHANGELOG.md",
-    "CONTRIBUTING.md",
     "LICENSE",
     "README.md",
-    "RELEASING.md",
     "SECURITY.md",
     "index.ts",
     "package.json",

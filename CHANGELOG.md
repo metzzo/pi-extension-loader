@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Changed
 
 - Fence the model-authored `reason` and `continueWith` fields inside the automatic continuation prompt.
+- Omit `CONTRIBUTING.md` and `RELEASING.md` from the published npm tarball; they remain in the source repository.
 - Report a duplicate `reload_runtime` call in the same run as explicitly ignored instead of letting it look accepted.
 
 ### Fixed
