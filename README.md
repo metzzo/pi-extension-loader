@@ -6,8 +6,8 @@ It provides two entry points:
 
 | Entry point | Intended caller | Behavior |
 | --- | --- | --- |
-| `/reload-runtime` | User | Runs Pi's native runtime reload immediately. |
-| `reload_runtime` | Agent | Requests one reload after the active agent run settles. |
+| `/reload-runtime` | User | Runs Pi's native runtime reload once the active run is idle. |
+| `reload_runtime` | Agent | Reloads after the active agent run settles, then automatically resumes the remaining work. |
 
 ## Requirements
 
@@ -34,7 +34,7 @@ pi remove npm:pi-extension-reloader
 Install the matching Git tag instead:
 
 ```bash
-pi install git:github.com/metzzo/pi-extension-loader@v0.1.1
+pi install git:github.com/metzzo/pi-extension-loader@v0.2.0
 ```
 
 For local development, install this checkout by absolute path:
@@ -55,9 +55,22 @@ Run a reload directly:
 /reload-runtime
 ```
 
-The agent can call `reload_runtime` after editing a Pi extension, skill, prompt template, theme, or context file. The tool records the request and returns with `terminate: true`. When Pi emits `agent_settled`, the extension dispatches `/reload-runtime` with command expansion enabled.
+The agent can call `reload_runtime` after editing a Pi extension, skill, prompt template, theme, or context file. It supplies:
 
-The settlement boundary matters: reloading inside the tool's `execute()` method would invalidate the extension context before Pi finishes wrapping the tool result. Deferring the command lets the tool and any sibling work finish before Pi replaces the runtime.
+- `reason`: why the runtime must reload
+- `continueWith`: the exact work to perform automatically after reload
+
+Examples:
+
+- After changing an extension tool: `Call hello_world and report its output.`
+- After editing a skill: `Use the updated review skill on src/index.ts.`
+- After changing a theme or context file: `Verify that the new runtime resource is active.`
+
+The tool persists the request before returning with `terminate: true`. When Pi emits `agent_settled`, the extension dispatches `/reload-runtime`. The reloaded extension marks the saved continuation as dispatched so later reloads do not replay it, then starts a fresh agent turn that identifies the completed reload and the remaining work.
+
+The settlement boundary matters: reloading inside the tool's `execute()` method would invalidate the extension context before Pi finishes wrapping the tool result. Deferring the command lets the tool and any sibling work finish before Pi replaces the runtime. After `ctx.reload()` completes, the old command frame invokes a callback installed by the fresh extension instance, so `session_start` and `resources_discover` finish before the continuation begins. The automatic continuation then prevents multi-step requests such as “edit, reload, and use the changed tool” from stopping after reload.
+
+Pi 0.84.2 does not expose a separate hook after every extension's `agent_settled` handler has finished. A later extension with a long-running `agent_settled` handler can therefore overlap the reload dispatched by this extension. Pi 0.84.2 also does not provide acknowledged continuation delivery. If the process exits or prompt preflight fails just after dispatch begins, the saved continuation remains marked as dispatched and is not replayed automatically.
 
 ## Development
 
@@ -84,9 +97,9 @@ Run the authenticated end-to-end test separately:
 npm run test:e2e
 ```
 
-It runs the real plugin through Pi RPC using `openai-codex/gpt-5.6-luna` at `low` thinking. It verifies the model calls `reload_runtime`, the command dispatches, and a changed extension receives `session_start` with reason `reload`.
+It runs the real plugin through Pi RPC using `openai-codex/gpt-5.6-luna` at `low` thinking. It verifies the model calls `reload_runtime`, the command dispatches, a changed extension receives `session_start` with reason `reload`, and the automatically resumed agent calls a tool that exists only after reload.
 
-The test copies `auth.json` and `models-store.json` from `~/.pi/agent` into a temporary agent directory, makes one live model request, and removes the directory afterward. Override the source with `PI_E2E_SOURCE_AGENT_DIR` or the executable with `PI_EXECUTABLE`. Raw RPC and stderr evidence is written under `.test-workspaces/`.
+The test copies `auth.json` and `models-store.json` from `~/.pi/agent` into a temporary agent directory, submits one RPC prompt that makes multiple live model calls, and removes the directory afterward. Override the source with `PI_E2E_SOURCE_AGENT_DIR` or the executable with `PI_EXECUTABLE`. Raw RPC and stderr evidence is written under `.test-workspaces/`.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution guidance and [RELEASING.md](RELEASING.md) for the maintainer checklist.
 

@@ -23,6 +23,9 @@ const piExecutable = process.env.PI_EXECUTABLE ?? "pi";
 const model = "openai-codex/gpt-5.6-luna";
 const thinkingLevel = "low";
 const timeoutMs = Number(process.env.PI_E2E_TIMEOUT_MS ?? 120_000);
+if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+  throw new Error("PI_E2E_TIMEOUT_MS must be a positive number");
+}
 const logDirectory = join(repositoryRoot, ".test-workspaces");
 const rpcLogPath = join(logDirectory, "e2e-rpc.jsonl");
 const stderrLogPath = join(logDirectory, "e2e-rpc.stderr.log");
@@ -59,12 +62,11 @@ class RpcProcess {
         model,
         "--thinking",
         thinkingLevel,
-        "--system-prompt",
+        "--append-system-prompt",
         [
-          "You are running an end-to-end integration test.",
-          "For the user's request, call reload_runtime exactly once.",
-          "Use the reason: Luna low end-to-end test.",
-          "Do not merely describe the tool call.",
+          "You are running an end-to-end integration test; perform the requested tool calls rather than describing them.",
+          "Use the reload reason: Luna low end-to-end test.",
+          "Set continueWith to exactly: After reload, call post_reload_check exactly once and report its output verbatim.",
         ].join(" "),
         ...extensionPaths.flatMap((path) => ["--extension", path]),
       ],
@@ -83,7 +85,19 @@ class RpcProcess {
     this.#child.stderr.setEncoding("utf8");
     this.#child.stdout.on("data", (chunk) => {
       this.#stdoutLog.write(chunk);
-      this.#consumeStdout(chunk);
+      try {
+        this.#consumeStdout(chunk);
+      } catch (error) {
+        const parseError = error instanceof Error ? error : new Error(String(error));
+        for (const pending of this.#pending.values()) pending.reject(parseError);
+        this.#pending.clear();
+        for (const waiter of this.#waiters) {
+          clearTimeout(waiter.timer);
+          waiter.reject(parseError);
+        }
+        this.#waiters.clear();
+        this.#child.kill("SIGTERM");
+      }
     });
     this.#child.stderr.on("data", (chunk) => this.#stderrLog.write(chunk));
 
@@ -160,6 +174,13 @@ class RpcProcess {
     });
   }
 
+  waitForCount(predicate, count, description) {
+    return this.waitFor(
+      () => this.#events.filter(predicate).length >= count,
+      description,
+    );
+  }
+
   get events() {
     return [...this.#events];
   }
@@ -174,6 +195,15 @@ class RpcProcess {
     ]);
     if (!exitResult) {
       this.#child.kill("SIGTERM");
+      exitResult = await Promise.race([
+        this.#exitPromise,
+        new Promise((resolvePromise) =>
+          setTimeout(() => resolvePromise(undefined), 5_000),
+        ),
+      ]);
+    }
+    if (!exitResult) {
+      this.#child.kill("SIGKILL");
       exitResult = await this.#exitPromise;
     }
     await Promise.all([finished(this.#stdoutLog), finished(this.#stderrLog)]);
@@ -203,6 +233,9 @@ const agentDir = join(temporaryRoot, "agent");
 const extensionPath = join(temporaryRoot, "index.ts");
 const markerExtensionPath = join(temporaryRoot, "marker.js");
 const reloadMarkerPath = join(temporaryRoot, "reload-complete.txt");
+const continuationMarkerPath = join(temporaryRoot, "continuation-complete.txt");
+const continueWith =
+  "After reload, call post_reload_check exactly once and report its output verbatim.";
 mkdirSync(agentDir, { recursive: true });
 for (const name of ["auth.json", "models-store.json"]) {
   const source = join(sourceAgentDir, name);
@@ -229,12 +262,22 @@ try {
 
   writeFileSync(
     markerExtensionPath,
-    `import { writeFileSync } from "node:fs";
+    `import { appendFileSync } from "node:fs";
 export default function (pi) {
   pi.on("session_start", (event) => {
     if (event.reason === "reload") {
-      writeFileSync(${JSON.stringify(reloadMarkerPath)}, "reloaded by Luna low\\n", "utf8");
+      appendFileSync(${JSON.stringify(reloadMarkerPath)}, "reloaded by Luna low\\n", "utf8");
     }
+  });
+  pi.registerTool({
+    name: "post_reload_check",
+    label: "Post-reload Check",
+    description: "Confirm that the changed extension is active after runtime reload",
+    parameters: { type: "object", properties: {}, additionalProperties: false },
+    async execute() {
+      appendFileSync(${JSON.stringify(continuationMarkerPath)}, "continued by Luna low\\n", "utf8");
+      return { content: [{ type: "text", text: "POST_RELOAD_CHECK_OK" }], details: {} };
+    },
   });
 }
 `,
@@ -245,24 +288,57 @@ export default function (pi) {
     (event) => event.type === "tool_execution_end" && event.toolName === "reload_runtime",
     "Luna to finish reload_runtime",
   );
-  const agentSettled = rpc.waitFor(
+  const postReloadToolFinished = rpc.waitFor(
+    (event) => event.type === "tool_execution_end" && event.toolName === "post_reload_check",
+    "Luna to run post_reload_check after reload",
+  );
+  const finalAgentSettled = rpc.waitForCount(
     (event) => event.type === "agent_settled",
-    "the Luna agent run to settle",
+    2,
+    "both Luna agent runs to settle",
   );
   await send(rpc, {
     id: "luna-reload",
     type: "prompt",
-    message: "Perform the requested Pi runtime reload now.",
+    message:
+      "Reload the edited extension, then call the newly available post_reload_check tool and report its output verbatim.",
   });
 
-  const [toolEvent] = await Promise.all([
+  const [toolEvent, postReloadToolEvent] = await Promise.all([
     toolFinished,
-    agentSettled,
+    postReloadToolFinished,
+    finalAgentSettled,
     waitForFile(reloadMarkerPath, "reloaded by Luna low\n"),
+    waitForFile(continuationMarkerPath, "continued by Luna low\n"),
   ]);
   assert.equal(toolEvent.isError, false);
   assert.equal(toolEvent.result.details.reason, "Luna low end-to-end test");
+  assert.equal(toolEvent.result.details.continueWith, continueWith);
   assert.equal(toolEvent.result.terminate, true);
+  assert.equal(postReloadToolEvent.isError, false);
+  assert.equal(postReloadToolEvent.result.content[0].text, "POST_RELOAD_CHECK_OK");
+
+  const toolEvents = rpc.events.filter((event) => event.type === "tool_execution_end");
+  assert.equal(
+    toolEvents.filter((event) => event.toolName === "reload_runtime").length,
+    1,
+    "reload_runtime must run exactly once",
+  );
+  assert.equal(
+    toolEvents.filter((event) => event.toolName === "post_reload_check").length,
+    1,
+    "post_reload_check must run exactly once",
+  );
+  assert.equal(
+    rpc.events.filter((event) => event.type === "agent_settled").length,
+    2,
+    "the initial and automatically continued agent runs must each settle once",
+  );
+  assert.equal(readFileSync(reloadMarkerPath, "utf8"), "reloaded by Luna low\n");
+  assert.equal(readFileSync(continuationMarkerPath, "utf8"), "continued by Luna low\n");
+
+  const finalAnswer = await send(rpc, { id: "final-answer", type: "get_last_assistant_text" });
+  assert.match(finalAnswer.data.text, /POST_RELOAD_CHECK_OK/);
 
   const commandsAfter = await send(rpc, { id: "commands-after", type: "get_commands" });
   assert.ok(
@@ -275,7 +351,7 @@ export default function (pi) {
   );
 
   console.log(
-    `Validated ${model}:${thinkingLevel} -> reload_runtime -> /reload-runtime -> session_start(reload)`,
+    `Validated ${model}:${thinkingLevel} -> reload_runtime -> reload -> automatic continuation -> post_reload_check`,
   );
 } catch (error) {
   primaryError = error;

@@ -1,7 +1,7 @@
 {
   "name": "pi-extension-reloader",
-  "version": "0.1.1",
-  "description": "Reload Pi extensions, skills, prompts, themes, and context files without restarting the session.",
+  "version": "0.2.0",
+  "description": "Reload Pi runtime resources and automatically continue the pending task without restarting the session.",
   "type": "module",
   "keywords": [
     "pi-package",

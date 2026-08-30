@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-08-30
+
+### Changed
+
+- Require `reload_runtime` callers to provide the exact work that should continue after reload.
+- Clarify the tool description with examples of Pi runtime resources that require reloading.
+
+### Fixed
+
+- Automatically resume the pending task in a fresh agent turn after the runtime reloads.
+- Persist continuations before settlement and mark them as dispatched so later manual reloads do not replay them.
+- Wait for the complete reload lifecycle, including resource discovery, before starting the continuation.
+- Label the resumed turn with the reload phase and guard against reloading the same edits again.
+
 ## [0.1.1] - 2026-08-28
 
 ### Added
@@ -19,5 +33,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Dispatch the reload request as an extension command instead of sending a literal command-shaped model prompt.
 
-[Unreleased]: https://github.com/metzzo/pi-extension-loader/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/metzzo/pi-extension-loader/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/metzzo/pi-extension-loader/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/metzzo/pi-extension-loader/releases/tag/v0.1.1

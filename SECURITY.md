@@ -18,4 +18,4 @@ Pi extensions execute with the user's full filesystem and process permissions. R
 
 This extension itself performs no direct filesystem, process, or network operations. It registers a command and tool, then asks Pi to run its native resource reload. A reload executes every configured extension again, so the security of the result also depends on the other Pi resources the user has installed.
 
-The opt-in end-to-end development test copies local Pi authentication files to a temporary agent directory and makes one live Luna request. It removes the temporary directory when finished and does not include credentials in its RPC evidence logs.
+The opt-in end-to-end development test copies local Pi authentication files to a temporary agent directory and makes multiple live Luna calls from one RPC prompt. It removes the temporary directory when finished and does not include credentials in its RPC evidence logs.
