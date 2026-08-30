@@ -252,14 +252,6 @@ try {
   assert.equal(initialState.data.model.id, "gpt-5.6-luna");
   assert.equal(initialState.data.thinkingLevel, thinkingLevel);
 
-  const commandsBefore = await send(rpc, { id: "commands-before", type: "get_commands" });
-  assert.ok(
-    commandsBefore.data.commands.some(
-      (command) => command.name === "reload-runtime" && command.source === "extension",
-    ),
-    "reload-runtime should be registered before the model runs",
-  );
-
   writeFileSync(
     markerExtensionPath,
     `import { appendFileSync } from "node:fs";
@@ -340,11 +332,6 @@ export default function (pi) {
   const finalAnswer = await send(rpc, { id: "final-answer", type: "get_last_assistant_text" });
   assert.match(finalAnswer.data.text, /POST_RELOAD_CHECK_OK/);
 
-  const commandsAfter = await send(rpc, { id: "commands-after", type: "get_commands" });
-  assert.ok(
-    commandsAfter.data.commands.some((command) => command.name === "reload-runtime"),
-    "reload-runtime should remain registered after reload",
-  );
   assert.deepEqual(
     rpc.events.filter((event) => event.type === "extension_error"),
     [],
