@@ -54,10 +54,16 @@ test("reload_runtime reloads changed resources through the real Pi runtime", asy
   const continueWith = "Verify the reloaded runtime with reload_test_marker.";
   const continuationPrompt = [
     "Automatic continuation after Pi runtime reload.",
-    "Reload reason: integration test",
+    "Reload reason (model-supplied):",
+    '"""',
+    "integration test",
+    '"""',
     "Continue the original user request from where it stopped. Later user messages take precedence for the remaining work; the reload itself is already complete.",
     "Do not call reload_runtime again for the same edits.",
-    `Remaining work: ${continueWith}`,
+    "Remaining work (model-supplied):",
+    '"""',
+    continueWith,
+    '"""',
   ].join("\n");
   cpSync(extensionPath, temporaryExtension);
   writeFileSync(
@@ -180,6 +186,11 @@ export default function (pi) {
     });
     assert.equal(duplicateResult.details.reason, "integration test");
     assert.equal(duplicateResult.details.continueWith, continueWith);
+    assert.match(
+      duplicateResult.content[0].text,
+      /duplicate call was ignored/,
+      "a coalesced duplicate must be told it was ignored",
+    );
     assert.equal(
       session.sessionManager.getBranch().filter(
         (entry) =>
@@ -235,13 +246,33 @@ export default function (pi) {
       `${continuationPrompt}\n`,
       "a later reload must not replay an already dispatched continuation",
     );
+    const dispatchedEntries = session.sessionManager.getBranch().filter(
+      (entry) =>
+        entry.type === "custom" &&
+        entry.customType === "pi-extension-reloader.dispatched-continuation",
+    );
+    assert.equal(dispatchedEntries.length, 1);
+    assert.deepEqual(
+      dispatchedEntries[0].data,
+      { reason: "integration test", continueWith },
+      "the dispatched entry carries the request for the repeat-loop guard",
+    );
+
+    const reloadedTool = session.agent.state.tools.find((tool) => tool.name === "reload_runtime");
+    assert.ok(reloadedTool, "reload_runtime should be registered by the reloaded extension");
+    await assert.rejects(
+      reloadedTool.execute("repeat-reload", { reason: "integration test", continueWith }),
+      /same edits/,
+      "an exact repeat of the dispatched continuation must be rejected",
+    );
     assert.equal(
       session.sessionManager.getBranch().filter(
         (entry) =>
           entry.type === "custom" &&
-          entry.customType === "pi-extension-reloader.dispatched-continuation",
+          entry.customType === "pi-extension-reloader.pending-continuation",
       ).length,
       1,
+      "a rejected repeat must not persist another pending continuation",
     );
     assert.deepEqual(extensionErrors, []);
   } finally {

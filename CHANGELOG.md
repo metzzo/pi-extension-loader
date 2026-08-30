@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- Fence the model-authored `reason` and `continueWith` fields inside the automatic continuation prompt.
+- Report a duplicate `reload_runtime` call in the same run as explicitly ignored instead of letting it look accepted.
+
+### Fixed
+
+- Reject a `reload_runtime` call that exactly repeats the last dispatched continuation, structurally preventing same-edits reload loops.
+
 ## [0.2.0] - 2026-08-30
 
 ### Changed
