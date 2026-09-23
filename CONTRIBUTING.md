@@ -6,7 +6,7 @@ Contributions are welcome. Work from a source checkout; development tests and in
 
 - Node.js 22.19.0 or newer
 - npm 10 or newer
-- Pi 0.84.2 (the pinned release-test baseline)
+- Pi 0.87.1 (the pinned release-test baseline, not a runtime version restriction)
 
 Install the locked development dependencies:
 

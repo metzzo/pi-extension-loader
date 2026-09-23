@@ -14,6 +14,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- Update development and packed-load tests to Pi 0.87.1 while retaining wildcard host peers without an upper version bound.
 - Reject a `reload_runtime` call that exactly repeats the last dispatched continuation, structurally preventing same-edits reload loops.
 
 ## [0.2.0] - 2026-08-30

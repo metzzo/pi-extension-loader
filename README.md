@@ -11,7 +11,7 @@ It provides two entry points:
 
 ## Requirements
 
-- Pi 0.84.2 (the pinned release-test baseline)
+- Pi with the public reload API; tested on 0.87.1, with no upper version bound
 - Node.js 22.19.0 or newer
 
 The package keeps Pi and TypeBox as `"*"` peer dependencies, as Pi's package documentation requires for bundled extension APIs. Development and packaged-consumer tests pin Pi and TypeBox to the versions used for this release so the release gate does not float with those peers.
@@ -89,7 +89,7 @@ The gate performs:
 
 - strict TypeScript checking
 - real Pi runtime tests for command and tool registration
-- a packaged-consumer smoke test against Pi 0.84.2
+- a packaged-consumer smoke test against Pi 0.87.1
 - an offline Pi loading smoke test
 - a production-dependency security audit
 

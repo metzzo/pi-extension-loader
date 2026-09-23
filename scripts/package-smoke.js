@@ -68,7 +68,7 @@ try {
       "--ignore-scripts",
       "--no-package-lock",
       tarball,
-      "@earendil-works/pi-coding-agent@0.84.2",
+      "@earendil-works/pi-coding-agent@0.87.1",
       "typebox@1.3.7",
     ],
     consumerDirectory,
