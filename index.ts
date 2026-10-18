@@ -132,7 +132,9 @@ export default function extensionReloaderExtension(pi: ExtensionAPI) {
       if (!state) return;
       state.resume = () => {
         pi.appendEntry(DISPATCHED_CONTINUATION, request);
-        pi.sendUserMessage(continuationPrompt(request));
+        // Another extension may have started a notification turn during reload.
+        // Use Pi's existing queue instead of dropping this already-marked dispatch.
+        pi.sendUserMessage(continuationPrompt(request), { deliverAs: "followUp" });
       };
       return;
     }

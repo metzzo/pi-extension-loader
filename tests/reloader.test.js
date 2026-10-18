@@ -3,12 +3,14 @@ import {
   cpSync,
   existsSync,
   mkdtempSync,
+  mkdirSync,
   readFileSync,
   realpathSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
+import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
@@ -22,9 +24,16 @@ const piPackageRoot = realpathSync(
 const {
   createAgentSession,
   DefaultResourceLoader,
+  ModelRuntime,
   SessionManager,
   SettingsManager,
 } = await import(pathToFileURL(join(piPackageRoot, "dist", "index.js")));
+// Use this SDK's existing provider test kit, whether npm nested or hoisted it.
+const aiEntry = createRequire(join(piPackageRoot, "package.json")).resolve.paths("@earendil-works/pi-ai")
+  .map((directory) => join(directory, "@earendil-works/pi-ai/dist/index.js")).find(existsSync);
+assert.ok(aiEntry, "the installed Pi SDK must provide its pi-ai dependency");
+const { InMemoryCredentialStore, fauxAssistantMessage, fauxProvider, fauxToolCall } = await import(pathToFileURL(aiEntry));
+const { getCurrentTools } = await import(pathToFileURL(join(dirname(aiEntry), "utils/transcript.js")));
 
 async function waitFor(check, description) {
   const deadline = Date.now() + 10_000;
@@ -33,6 +42,124 @@ async function waitFor(check, description) {
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 10));
   }
   assert.fail(`Timed out waiting for ${description}`);
+}
+
+for (const control of ["idle", "notification", "stop", "missing-tool"]) {
+  test(`automatically continues through the real SDK after reload: ${control}`, { timeout: 20000 }, async () => {
+    const workspace = join(repositoryRoot, ".test-workspaces");
+    mkdirSync(workspace, { recursive: true });
+    const root = mkdtempSync(join(workspace, "automatic-continuation-"));
+    const marker = join(root, "marker.ts");
+    const effect = join(root, "next-action.txt");
+    const busy = control === "notification" || control === "stop";
+    const errors = [];
+    let releaseNotification;
+    let releaseDiscovery;
+    const notification = new Promise((resolvePromise) => { releaseNotification = resolvePromise; });
+    const discovery = new Promise((resolvePromise) => { releaseDiscovery = resolvePromise; });
+    let discoveryEntered = false;
+    let discoveryFinished = false;
+    let notificationEntered = false;
+    let continuationSeen = false;
+    let reloads = 0;
+    let session;
+    let running;
+    let passed = false;
+    const provider = fauxProvider({ provider: "faux", models: [{ id: "parent", reasoning: true }] });
+    const settings = SettingsManager.inMemory({ compaction: { enabled: false }, retry: { enabled: false } }, { projectTrusted: true });
+    try {
+      writeFileSync(marker, "export default function() {}\n");
+      const runtime = await ModelRuntime.create({ credentials: new InMemoryCredentialStore(), modelsPath: null, refreshOnCreate: false });
+      runtime.registerNativeProvider(provider.provider);
+      const loader = new DefaultResourceLoader({
+        cwd: root, agentDir: join(root, "agent"), settingsManager: settings,
+        noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
+        additionalExtensionPaths: [extensionPath, marker],
+        extensionFactories: [(pi) => {
+          pi.on("session_start", (event) => {
+            if (event.reason !== "reload") return;
+            reloads += 1;
+            if (busy) pi.sendMessage({ customType: "review-notification", content: "Unrelated review finished.", display: true }, { triggerTurn: true, deliverAs: "followUp" });
+          });
+          pi.on("resources_discover", async (event) => {
+            if (event.reason !== "reload") return;
+            discoveryEntered = true;
+            await discovery;
+            discoveryFinished = true;
+          });
+        }],
+      });
+      await loader.reload();
+      ({ session } = await createAgentSession({ cwd: root, agentDir: join(root, "agent"), resourceLoader: loader,
+        modelRuntime: runtime, model: runtime.getModel("faux", "parent"), settingsManager: settings,
+        sessionManager: SessionManager.create(root, join(root, "sessions")), noTools: "builtin" }));
+      await session.bindExtensions({ mode: "json", onError: (error) => errors.push(error), commandContextActions: {
+        waitForIdle: () => session.waitForIdle(), reload: () => session.reload(),
+        newSession: async () => ({ cancelled: true }), fork: async () => ({ cancelled: true }),
+        navigateTree: async () => ({ cancelled: true }), switchSession: async () => ({ cancelled: true }),
+      } });
+      const identity = session.sessionId;
+      assert.equal(session.getActiveToolNames().includes("after_reload_action"), false);
+      writeFileSync(marker, control === "missing-tool" ? "throw new Error('Changed extension cannot load');\n" : `import {appendFileSync} from 'node:fs';
+export default function(pi) { pi.registerTool({name:'after_reload_action', label:'After reload action', description:'New action from changed resource', parameters:{type:'object',properties:{}},
+async execute(){appendFileSync(${JSON.stringify(effect)}, 'acted\\n'); return {content:[{type:'text',text:'acted'}],details:{},terminate:true};}}); }\n`);
+      const next = async (context) => {
+        const text = context.messages.filter((message) => message.role === "user").map((message) =>
+          typeof message.content === "string" ? message.content : message.content.map((part) => part.text ?? "").join("\n")).join("\n");
+        if (!text.includes("Automatic continuation after Pi runtime reload.")) {
+          notificationEntered = true;
+          await notification;
+          return fauxAssistantMessage("Notification noted.");
+        }
+        continuationSeen = true;
+        assert.equal(discoveryFinished, true, "automatic continuation waits for complete resource discovery");
+        assert.equal(session.sessionId, identity, "reload retains the same parent");
+        assert.match(text, /Later user messages take precedence/);
+        if (control === "stop") {
+          assert.match(text, /STOP: do not perform the remaining action/, "intervening user stop reaches the continuation unchanged");
+          return fauxAssistantMessage("Stopped as requested.");
+        }
+        const advertised = getCurrentTools(context.messages).some((tool) => tool.name === "after_reload_action");
+        if (control === "missing-tool") {
+          assert.equal(advertised, false, "failed resource loading is not represented as a callable fresh tool");
+          return fauxAssistantMessage("Expected action unavailable; do not reload or act blindly.");
+        }
+        assert.equal(advertised, true, "the actual resumed request sees the new tool, not stale bindings");
+        return fauxAssistantMessage(fauxToolCall("after_reload_action", {}), { stopReason: "toolUse" });
+      };
+      const request = { reason: "Changed marker extension", continueWith: "Invoke after_reload_action once if still authorized and available." };
+      provider.setResponses([fauxAssistantMessage(fauxToolCall("reload_runtime", request), { stopReason: "toolUse" }), next, next, next]);
+      running = session.prompt("Reload the changed runtime and perform the remaining action.");
+      await waitFor(() => discoveryEntered && (!busy || notificationEntered), "the real delayed reload and optional concurrent notification");
+      assert.equal(continuationSeen, false, "no premature continuation while discovery is held");
+      if (control === "stop") await session.steer("STOP: do not perform the remaining action.");
+      releaseDiscovery();
+      if (busy) {
+        await waitFor(() => errors.length > 0 || session.getFollowUpMessages().length > 0, "continuation admission while the notification turn is active");
+        assert.deepEqual(errors, [], "busy continuation must be queued rather than silently dropped after dispatch");
+        assert.equal(session.getFollowUpMessages().length, 1);
+      }
+      releaseNotification();
+      await running;
+      await waitFor(() => continuationSeen && session.isIdle, "the actual automatic post-reload request without another human prompt");
+      assert.deepEqual(errors, []);
+      assert.equal(reloads, 1);
+      assert.equal(session.messages.filter((message) => message.role === "user").length, control === "stop" ? 3 : 2);
+      assert.equal(existsSync(effect), control !== "stop" && control !== "missing-tool");
+      if (existsSync(effect)) assert.equal(readFileSync(effect, "utf8"), "acted\n", "the next action runs exactly once");
+      assert.equal(loader.getExtensions().errors.length, control === "missing-tool" ? 1 : 0);
+      const count = (kind) => session.sessionManager.getBranch().filter((entry) => entry.type === "custom" && entry.customType === `pi-extension-reloader.${kind}-continuation`).length;
+      assert.equal(count("pending"), 1); assert.equal(count("dispatched"), 1);
+      await assert.rejects(session.agent.state.tools.find((tool) => tool.name === "reload_runtime").execute("duplicate", request), /same edits/);
+      assert.equal(reloads, 1, "an exact repeat cannot reload or replay the action");
+      passed = true;
+    } finally {
+      releaseDiscovery(); releaseNotification();
+      await session?.abort(); await running?.catch(() => undefined); await session?.waitForIdle(); session?.dispose();
+      await settings.flush();
+      if (passed) rmSync(root, { recursive: true, force: true });
+    }
+  });
 }
 
 test("the package advertises its extension and bundled Pi imports as peers", () => {
@@ -48,7 +175,9 @@ test("the package advertises its extension and bundled Pi imports as peers", () 
 test("reload_runtime reloads changed resources through the real Pi runtime", async () => {
   const temporaryRoot = mkdtempSync(join(tmpdir(), "pi-extension-reloader-"));
   const temporaryExtension = join(temporaryRoot, "index.ts");
-  const markerExtension = join(temporaryRoot, "marker.js");
+  // TypeScript goes through Pi's reloadable loader. A .js file below this
+  // type:module checkout is native-imported and retains Node's ESM cache.
+  const markerExtension = join(temporaryRoot, "marker.ts");
   const continuationMarker = join(temporaryRoot, "continuation.txt");
   const reloadLifecycleMarker = join(temporaryRoot, "reload-lifecycle.txt");
   const continueWith = "Verify the reloaded runtime with reload_test_marker.";
@@ -96,6 +225,7 @@ test("reload_runtime reloads changed resources through the real Pi runtime", asy
     });
     session = result.session;
     assert.deepEqual(result.extensionsResult.errors, []);
+    assert.deepEqual(result.extensionsResult.extensions.map((extension) => extension.path).sort(), [temporaryExtension, markerExtension].sort(), "the collision fixture must load both exact extension files");
 
     const extensionErrors = [];
     await session.bindExtensions({
@@ -209,9 +339,11 @@ export default function (pi) {
 
     await session.extensionRunner.emit({ type: "agent_settled" });
     await waitFor(
-      () => session.agent.state.tools.some((tool) => tool.name === "reload_test_marker"),
+      () => session.agent.state.tools.some((tool) => tool.name === "reload_test_marker") || extensionErrors.length > 0,
       "the changed marker extension to become active despite a public command-name collision",
     );
+    assert.deepEqual(extensionErrors, [], JSON.stringify({ loadErrors: resourceLoader.getExtensions().errors, tools: session.getActiveToolNames() }));
+    assert.ok(session.agent.state.tools.some((tool) => tool.name === "reload_test_marker"));
     await waitFor(
       () =>
         existsSync(reloadLifecycleMarker) &&

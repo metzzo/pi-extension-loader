@@ -66,11 +66,11 @@ Examples:
 - After editing a skill: `Use the updated review skill on src/index.ts.`
 - After changing a theme or context file: `Verify that the new runtime resource is active.`
 
-The tool persists the request before returning with `terminate: true`. When Pi emits `agent_settled`, the extension dispatches `/reload-runtime`. The reloaded extension marks the saved continuation as dispatched so later reloads do not replay it, then starts a fresh agent turn that identifies the completed reload and the remaining work.
+The tool persists the request before returning with `terminate: true`. When Pi emits `agent_settled`, the extension dispatches `/reload-runtime`. The reloaded extension marks the saved continuation as dispatched so later reloads do not replay it, then sends a follow-up identifying the completed reload and the remaining work. If another extension started a notification turn during reload, Pi queues the continuation behind that turn rather than rejecting it as busy. Newer user instructions still take precedence; a continuation does not authorize repeating an operation whose result is uncertain.
 
 The settlement boundary matters: reloading inside the tool's `execute()` method would invalidate the extension context before Pi finishes wrapping the tool result. Deferring the command lets the tool and any sibling work finish before Pi replaces the runtime. After `ctx.reload()` completes, the old command frame invokes a callback installed by the fresh extension instance, so `session_start` and `resources_discover` finish before the continuation begins. The automatic continuation then prevents multi-step requests such as “edit, reload, and use the changed tool” from stopping after reload.
 
-Pi 0.84.2 does not expose a separate hook after every extension's `agent_settled` handler has finished. A later extension with a long-running `agent_settled` handler can therefore overlap the reload dispatched by this extension. Pi 0.84.2 also does not provide acknowledged continuation delivery. If the process exits or prompt preflight fails just after dispatch begins, the saved continuation remains marked as dispatched and is not replayed automatically.
+Pi 0.84.2 does not expose a separate hook after every extension's `agent_settled` handler has finished, so a later handler can overlap reload dispatch. Pi 0.87.1 defers actions requested during that event until its handlers finish. Neither ordering prevents another extension from starting a notification during the reload lifecycle itself; the follow-up delivery mode handles that overlap. The extension API does not provide acknowledged continuation delivery. If the process exits, the queue is cleared, or prompt preflight fails just after dispatch begins, the saved continuation remains marked as dispatched and is not replayed automatically. A dispatched marker records an attempt, not proof that the next action ran.
 
 Pi collects extension load errors instead of failing the reload, so the continuation can start even though an edited extension was skipped; check Pi's extension error output when expected tools or commands are missing. If this extension itself fails to load after an edit, no continuation is dispatched, and a failed reload in the TUI is reported by Pi without reaching this extension; in both cases the persisted continuation resumes on the next `/reload-runtime`. The automatic continuation is designed for persistent sessions (TUI, RPC); single-shot print or JSON runs may exit before it completes.
 
@@ -88,7 +88,7 @@ npm run release:check
 The gate performs:
 
 - strict TypeScript checking
-- real Pi runtime tests for command and tool registration
+- real Pi runtime tests for command and tool registration, automatic continuation during a concurrent notification, delayed resource discovery, intervening STOP, and missing fresh tools
 - a packaged-consumer smoke test against Pi 0.87.1
 - an offline Pi loading smoke test
 - a production-dependency security audit
