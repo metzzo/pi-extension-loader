@@ -162,6 +162,72 @@ async execute(){appendFileSync(${JSON.stringify(effect)}, 'acted\\n'); return {c
   });
 }
 
+test("without a UI the initial prompt resolves only after every continuation, including a nested reload, is persisted", { timeout: 20000 }, async () => {
+  const workspace = join(repositoryRoot, ".test-workspaces");
+  mkdirSync(workspace, { recursive: true });
+  const root = mkdtempSync(join(workspace, "headless-continuation-"));
+  const errors = [];
+  let session;
+  let passed = false;
+  const provider = fauxProvider({ provider: "faux", models: [{ id: "parent", reasoning: true }] });
+  const settings = SettingsManager.inMemory({ compaction: { enabled: false }, retry: { enabled: false } }, { projectTrusted: true });
+  try {
+    const runtime = await ModelRuntime.create({ credentials: new InMemoryCredentialStore(), modelsPath: null, refreshOnCreate: false });
+    runtime.registerNativeProvider(provider.provider);
+    const loader = new DefaultResourceLoader({
+      cwd: root, agentDir: join(root, "agent"), settingsManager: settings,
+      noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
+      additionalExtensionPaths: [extensionPath],
+      extensionFactories: [(pi) => {
+        // A turn_end handler makes Pi report turns whose assistant message was not persisted.
+        pi.on("turn_end", () => {});
+        // High-priority mail arriving during reload starts its own turn.
+        pi.on("session_start", (event) => {
+          if (event.reason === "reload") pi.sendMessage({ customType: "mail", content: "High priority mail.", display: true }, { triggerTurn: true, deliverAs: "steer" });
+        });
+      }],
+    });
+    await loader.reload();
+    ({ session } = await createAgentSession({ cwd: root, agentDir: join(root, "agent"), resourceLoader: loader,
+      modelRuntime: runtime, model: runtime.getModel("faux", "parent"), settingsManager: settings,
+      sessionManager: SessionManager.create(root, join(root, "sessions")), noTools: "builtin" }));
+    // No uiContext: the same headless binding print mode uses before it disposes the session.
+    await session.bindExtensions({ mode: "print", onError: (error) => errors.push(error.error), commandContextActions: {
+      waitForIdle: () => session.waitForIdle(), reload: () => session.reload(),
+      newSession: async () => ({ cancelled: true }), fork: async () => ({ cancelled: true }),
+      navigateTree: async () => ({ cancelled: true }), switchSession: async () => ({ cancelled: true }),
+    } });
+    const textOf = (message) => typeof message.content === "string" ? message.content : message.content.map((part) => part.text ?? "").join("\n");
+    // Answer the latest prompt: mail is acknowledged, each continuation advances one step.
+    const respond = (context) => {
+      const latest = textOf(context.messages.filter((message) => message.role === "user" || message.role === "custom").at(-1));
+      if (latest.includes("Report second reload done.")) return fauxAssistantMessage("Final continuation reply.");
+      if (latest.includes("Invoke the second reload.")) {
+        return fauxAssistantMessage(fauxToolCall("reload_runtime", { reason: "Second change", continueWith: "Report second reload done." }), { stopReason: "toolUse" });
+      }
+      return fauxAssistantMessage("Mail noted.");
+    };
+    provider.setResponses([
+      fauxAssistantMessage(fauxToolCall("reload_runtime", { reason: "First change", continueWith: "Invoke the second reload." }), { stopReason: "toolUse" }),
+      ...Array(8).fill(respond),
+    ]);
+    await session.prompt("Reload twice and finish.");
+    const persisted = new Set(session.sessionManager.getBranch().filter((entry) => entry.type === "message").map((entry) => entry.message));
+    const replies = session.messages.filter((message) => message.role === "assistant");
+    assert.deepEqual(errors, [], "no turn may run on a session that stopped persisting");
+    assert.deepEqual(replies.filter((message) => !persisted.has(message)), [], "every assistant reply is persisted before the prompt resolves");
+    const finalText = replies.at(-1)?.content.map((part) => part.text ?? "").join("");
+    assert.equal(finalText, "Final continuation reply.", "the prompt resolves only after the nested continuation finished");
+    const count = (kind) => session.sessionManager.getBranch().filter((entry) => entry.type === "custom" && entry.customType === `pi-extension-reloader.${kind}-continuation`).length;
+    assert.equal(count("dispatched"), 2);
+    passed = true;
+  } finally {
+    await session?.abort(); await session?.waitForIdle(); session?.dispose();
+    await settings.flush();
+    if (passed) rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("the package advertises its extension and bundled Pi imports as peers", () => {
   const manifest = JSON.parse(readFileSync(join(repositoryRoot, "package.json"), "utf8"));
 

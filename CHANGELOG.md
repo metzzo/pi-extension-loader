@@ -17,6 +17,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Queue automatic continuation as a follow-up when another extension starts a notification turn during reload, instead of marking it dispatched and losing it to Pi's busy-session refusal. Real offline SDK tests cover delayed reload, user STOP, fresh tools, and missing tools without adding retries or dependencies.
 - Update development and packed-load tests to Pi 0.87.1 while retaining wildcard host peers without an upper version bound.
 - Reject a `reload_runtime` call that exactly repeats the last dispatched continuation, structurally preventing same-edits reload loops.
+- Without a UI (print or JSON mode), hold the reload command until the automatic continuation settles, including any further reload it schedules. Previously the initial prompt resolved first, the host disposed the session, and the continuation kept calling the model on a session that no longer persisted anything.
 
 ## [0.2.0] - 2026-08-30
 

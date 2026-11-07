@@ -13,17 +13,26 @@ type ReloadRequest = {
 };
 
 type ReloadState = {
-  resume?: () => void;
+  resume?: () => Promise<void> | void;
 };
 
 type GlobalWithContinuationBridge = typeof globalThis & {
   __piExtensionReloaderContinuationBridge?: Map<string, ReloadState>;
+  __piExtensionReloaderContinuationHolds?: Map<string, Array<() => void>>;
 };
 
 function reloadStates(): Map<string, ReloadState> {
   const scope = globalThis as GlobalWithContinuationBridge;
   scope[BRIDGE_PROPERTY] ??= new Map();
   return scope[BRIDGE_PROPERTY];
+}
+
+// Reload commands waiting for their continuation to settle, per session. They
+// outlive extension instances because a continuation may reload again.
+function continuationHolds(): Map<string, Array<() => void>> {
+  const scope = globalThis as GlobalWithContinuationBridge;
+  scope.__piExtensionReloaderContinuationHolds ??= new Map();
+  return scope.__piExtensionReloaderContinuationHolds;
 }
 
 function normalizeReloadRequest(value: unknown): ReloadRequest | undefined {
@@ -110,7 +119,7 @@ export default function extensionReloaderExtension(pi: ExtensionAPI) {
       // persisted pending continuation is recovered by a later /reload-runtime.
       const resume = state.resume;
       if (states.get(sessionId) === state) states.delete(sessionId);
-      resume?.();
+      await resume?.();
       return;
     },
   });
@@ -135,13 +144,30 @@ export default function extensionReloaderExtension(pi: ExtensionAPI) {
         // Another extension may have started a notification turn during reload.
         // Use Pi's existing queue instead of dropping this already-marked dispatch.
         pi.sendUserMessage(continuationPrompt(request), { deliverAs: "followUp" });
+        if (ctx.hasUI) return;
+        // Without a UI (print or JSON mode) the host disposes the session once its
+        // prompt resolves, and that prompt waits for this command. Starting the
+        // continuation without holding the command would leave it running on a
+        // disposed session that no longer persists anything.
+        return new Promise<void>((resolve) => {
+          const holds = continuationHolds();
+          holds.set(sessionId, [...(holds.get(sessionId) ?? []), resolve]);
+        });
       };
       return;
     }
   });
 
-  pi.on("agent_settled", () => {
-    if (!reloadRequest) return;
+  pi.on("agent_settled", (_event, ctx) => {
+    if (!reloadRequest) {
+      // The continuation settled without scheduling another reload.
+      const sessionId = ctx.sessionManager.getSessionId();
+      const holds = continuationHolds();
+      const waiting = holds.get(sessionId) ?? [];
+      holds.delete(sessionId);
+      for (const release of waiting) release();
+      return;
+    }
 
     const toolSource = pi.getAllTools().find((tool) => tool.name === "reload_runtime")?.sourceInfo;
     const reloadCommand = pi.getCommands().find(
