@@ -44,14 +44,14 @@ async function waitFor(check, description) {
   assert.fail(`Timed out waiting for ${description}`);
 }
 
-for (const control of ["idle", "notification", "stop", "missing-tool"]) {
+for (const control of ["idle", "notification", "starting-notification", "stop", "missing-tool"]) {
   test(`automatically continues through the real SDK after reload: ${control}`, { timeout: 20000 }, async () => {
     const workspace = join(repositoryRoot, ".test-workspaces");
     mkdirSync(workspace, { recursive: true });
     const root = mkdtempSync(join(workspace, "automatic-continuation-"));
     const marker = join(root, "marker.ts");
     const effect = join(root, "next-action.txt");
-    const busy = control === "notification" || control === "stop";
+    const busy = control === "notification" || control === "starting-notification" || control === "stop";
     const errors = [];
     let releaseNotification;
     let releaseDiscovery;
@@ -60,6 +60,9 @@ for (const control of ["idle", "notification", "stop", "missing-tool"]) {
     let discoveryEntered = false;
     let discoveryFinished = false;
     let notificationEntered = false;
+    let notificationProviderEntered = false;
+    let customStartSeen = false;
+    let typedStartSeen = false;
     let continuationSeen = false;
     let reloads = 0;
     let session;
@@ -76,6 +79,14 @@ for (const control of ["idle", "notification", "stop", "missing-tool"]) {
         noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
         additionalExtensionPaths: [extensionPath, marker],
         extensionFactories: [(pi) => {
+          pi.on("before_agent_start", async (event, ctx) => {
+            typedStartSeen ||= "messageType" in event;
+            if (control !== "starting-notification" || event.messageType !== "custom") return;
+            customStartSeen = true;
+            notificationEntered = true;
+            assert.equal(ctx.isIdle(), false, "a custom-message run is busy before its provider starts");
+            await notification;
+          });
           pi.on("session_start", (event) => {
             if (event.reason !== "reload") return;
             reloads += 1;
@@ -107,6 +118,7 @@ async execute(){appendFileSync(${JSON.stringify(effect)}, 'acted\\n'); return {c
         const text = context.messages.filter((message) => message.role === "user").map((message) =>
           typeof message.content === "string" ? message.content : message.content.map((part) => part.text ?? "").join("\n")).join("\n");
         if (!text.includes("Automatic continuation after Pi runtime reload.")) {
+          notificationProviderEntered = true;
           notificationEntered = true;
           await notification;
           return fauxAssistantMessage("Notification noted.");
@@ -132,6 +144,9 @@ async execute(){appendFileSync(${JSON.stringify(effect)}, 'acted\\n'); return {c
       running = session.prompt("Reload the changed runtime and perform the remaining action.");
       await waitFor(() => discoveryEntered && (!busy || notificationEntered), "the real delayed reload and optional concurrent notification");
       assert.equal(continuationSeen, false, "no premature continuation while discovery is held");
+      if (customStartSeen) {
+        assert.equal(notificationProviderEntered, false, "the notification is held before its provider starts");
+      }
       if (control === "stop") await session.steer("STOP: do not perform the remaining action.");
       releaseDiscovery();
       if (busy) {
@@ -143,6 +158,9 @@ async execute(){appendFileSync(${JSON.stringify(effect)}, 'acted\\n'); return {c
       await running;
       await waitFor(() => continuationSeen && session.isIdle, "the actual automatic post-reload request without another human prompt");
       assert.deepEqual(errors, []);
+      if (control === "starting-notification") {
+        assert.equal(customStartSeen, typedStartSeen, "hosts with typed start events must exercise the held custom-start window");
+      }
       assert.equal(reloads, 1);
       assert.equal(session.messages.filter((message) => message.role === "user").length, control === "stop" ? 3 : 2);
       assert.equal(existsSync(effect), control !== "stop" && control !== "missing-tool");

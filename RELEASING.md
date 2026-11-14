@@ -16,7 +16,7 @@
    npm run release:check
    ```
 
-6. Run the authenticated Luna-low end-to-end test:
+6. Source an isolated Pi environment and run the authenticated GPT-6.1-Sol-low end-to-end test on both supported versions:
 
    ```bash
    npm run test:e2e

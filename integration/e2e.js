@@ -8,19 +8,21 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { finished } from "node:stream/promises";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const sourceAgentDir = resolve(
-  process.env.PI_E2E_SOURCE_AGENT_DIR ?? join(homedir(), ".pi", "agent"),
-);
+const sourceAgentPath = process.env.PI_E2E_SOURCE_AGENT_DIR ?? process.env.PI_CODING_AGENT_DIR;
+if (!sourceAgentPath) throw new Error("Source an isolated Pi environment or set PI_E2E_SOURCE_AGENT_DIR");
+const sourceAgentDir = resolve(sourceAgentPath);
 const piExecutable = process.env.PI_EXECUTABLE ?? "pi";
-const model = "openai-codex/gpt-5.6-luna";
+const model = "openai-codex/gpt-6.1-sol";
+const installedPackage = process.env.PI_E2E_INSTALLED_PACKAGE === "1";
 const thinkingLevel = "low";
 const timeoutMs = Number(process.env.PI_E2E_TIMEOUT_MS ?? 120_000);
 if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
@@ -52,7 +54,7 @@ class RpcProcess {
         "rpc",
         "--no-session",
         "--offline",
-        "--no-extensions",
+        ...(installedPackage ? [] : ["--no-extensions"]),
         "--no-builtin-tools",
         "--no-skills",
         "--no-prompt-templates",
@@ -65,7 +67,7 @@ class RpcProcess {
         "--append-system-prompt",
         [
           "You are running an end-to-end integration test; perform the requested tool calls rather than describing them.",
-          "Use the reload reason: Luna low end-to-end test.",
+          "Use the reload reason: Runtime reload end-to-end test.",
           "Set continueWith to exactly: After reload, call post_reload_check exactly once and report its output verbatim.",
         ].join(" "),
         ...extensionPaths.flatMap((path) => ["--extension", path]),
@@ -219,15 +221,6 @@ async function send(rpc, command) {
   return response;
 }
 
-async function waitForFile(path, expectedContent) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (existsSync(path) && readFileSync(path, "utf8") === expectedContent) return;
-    await new Promise((resolvePromise) => setTimeout(resolvePromise, 20));
-  }
-  throw new Error(`Timed out waiting for reload marker ${path}; RPC log: ${rpcLogPath}`);
-}
-
 const temporaryRoot = mkdtempSync(join(tmpdir(), "pi-extension-reloader-e2e-"));
 const agentDir = join(temporaryRoot, "agent");
 const extensionPath = join(temporaryRoot, "index.ts");
@@ -239,18 +232,34 @@ const continueWith =
 mkdirSync(agentDir, { recursive: true });
 for (const name of ["auth.json", "models-store.json"]) {
   const source = join(sourceAgentDir, name);
-  if (existsSync(source)) cpSync(source, join(agentDir, name));
+  if (!existsSync(source)) continue;
+  // Share OAuth locking/refresh with the source; copying can invalidate other sessions.
+  if (name === "auth.json") symlinkSync(source, join(agentDir, name));
+  else cpSync(source, join(agentDir, name));
+}
+if (installedPackage) {
+  const settings = JSON.parse(readFileSync(join(sourceAgentDir, "settings.json"), "utf8"));
+  assert.ok(settings.packages?.some((entry) => {
+    const source = typeof entry === "string" ? entry : entry.source;
+    return source && resolve(sourceAgentDir, source) === repositoryRoot;
+  }), "pi install this worktree into the sourced agent directory before installed-package smoke");
+  // Only this installed package; relative source paths would break in the temporary dir.
+  writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ packages: [repositoryRoot], projectTrusted: true }));
 }
 cpSync(join(repositoryRoot, "index.ts"), extensionPath);
 writeFileSync(markerExtensionPath, "export default function () {}\n", "utf8");
 
-const rpc = new RpcProcess(agentDir, [extensionPath, markerExtensionPath]);
+const rpc = new RpcProcess(agentDir, installedPackage ? [markerExtensionPath] : [extensionPath, markerExtensionPath]);
 let primaryError;
 try {
   const initialState = await send(rpc, { id: "initial-state", type: "get_state" });
   assert.equal(initialState.data.model.provider, "openai-codex");
-  assert.equal(initialState.data.model.id, "gpt-5.6-luna");
+  assert.equal(initialState.data.model.id, "gpt-6.1-sol");
   assert.equal(initialState.data.thinkingLevel, thinkingLevel);
+
+  const commands = await send(rpc, { id: "commands", type: "get_commands" });
+  assert.ok(commands.data.commands.some((command) => command.name === "reload-runtime"));
+  await send(rpc, { id: "manual-reload", type: "prompt", message: "/reload-runtime" });
 
   writeFileSync(
     markerExtensionPath,
@@ -258,7 +267,7 @@ try {
 export default function (pi) {
   pi.on("session_start", (event) => {
     if (event.reason === "reload") {
-      appendFileSync(${JSON.stringify(reloadMarkerPath)}, "reloaded by Luna low\\n", "utf8");
+      appendFileSync(${JSON.stringify(reloadMarkerPath)}, "reloaded\\n", "utf8");
     }
   });
   pi.registerTool({
@@ -267,7 +276,7 @@ export default function (pi) {
     description: "Confirm that the changed extension is active after runtime reload",
     parameters: { type: "object", properties: {}, additionalProperties: false },
     async execute() {
-      appendFileSync(${JSON.stringify(continuationMarkerPath)}, "continued by Luna low\\n", "utf8");
+      appendFileSync(${JSON.stringify(continuationMarkerPath)}, "continued\\n", "utf8");
       return { content: [{ type: "text", text: "POST_RELOAD_CHECK_OK" }], details: {} };
     },
   });
@@ -276,35 +285,28 @@ export default function (pi) {
     "utf8",
   );
 
-  const toolFinished = rpc.waitFor(
-    (event) => event.type === "tool_execution_end" && event.toolName === "reload_runtime",
-    "Luna to finish reload_runtime",
-  );
-  const postReloadToolFinished = rpc.waitFor(
-    (event) => event.type === "tool_execution_end" && event.toolName === "post_reload_check",
-    "Luna to run post_reload_check after reload",
-  );
-  const finalAgentSettled = rpc.waitForCount(
-    (event) => event.type === "agent_settled",
-    2,
-    "both Luna agent runs to settle",
-  );
-  await send(rpc, {
-    id: "luna-reload",
-    type: "prompt",
-    message:
-      "Reload the edited extension, then call the newly available post_reload_check tool and report its output verbatim.",
-  });
-
+  // Attach every rejection handler before starting the run, so a timeout still
+  // reaches finally and closes the real RPC child instead of orphaning it.
   const [toolEvent, postReloadToolEvent] = await Promise.all([
-    toolFinished,
-    postReloadToolFinished,
-    finalAgentSettled,
-    waitForFile(reloadMarkerPath, "reloaded by Luna low\n"),
-    waitForFile(continuationMarkerPath, "continued by Luna low\n"),
+    rpc.waitFor(
+      (event) => event.type === "tool_execution_end" && event.toolName === "reload_runtime",
+      "the model to finish reload_runtime",
+    ),
+    rpc.waitFor(
+      (event) => event.type === "tool_execution_end" && event.toolName === "post_reload_check",
+      "the model to run post_reload_check after reload",
+    ),
+    rpc.waitForCount((event) => event.type === "agent_settled", 2, "both agent runs to settle"),
+    send(rpc, {
+      id: "model-reload",
+      type: "prompt",
+      message:
+        "Reload the edited extension, then call the newly available post_reload_check tool and report its output verbatim.",
+    }),
   ]);
   assert.equal(toolEvent.isError, false);
-  assert.equal(toolEvent.result.details.reason, "Luna low end-to-end test");
+  const reloadCall = rpc.events.find((event) => event.type === "tool_execution_start" && event.toolName === "reload_runtime");
+  assert.equal(toolEvent.result.details.reason, reloadCall.args.reason, "the tool preserves the model's reload reason");
   assert.equal(toolEvent.result.details.continueWith, continueWith);
   assert.equal(toolEvent.result.terminate, true);
   assert.equal(postReloadToolEvent.isError, false);
@@ -326,8 +328,8 @@ export default function (pi) {
     2,
     "the initial and automatically continued agent runs must each settle once",
   );
-  assert.equal(readFileSync(reloadMarkerPath, "utf8"), "reloaded by Luna low\n");
-  assert.equal(readFileSync(continuationMarkerPath, "utf8"), "continued by Luna low\n");
+  assert.equal(readFileSync(reloadMarkerPath, "utf8"), "reloaded\n");
+  assert.equal(readFileSync(continuationMarkerPath, "utf8"), "continued\n");
 
   const finalAnswer = await send(rpc, { id: "final-answer", type: "get_last_assistant_text" });
   assert.match(finalAnswer.data.text, /POST_RELOAD_CHECK_OK/);
@@ -338,7 +340,7 @@ export default function (pi) {
   );
 
   console.log(
-    `Validated ${model}:${thinkingLevel} -> reload_runtime -> reload -> automatic continuation -> post_reload_check`,
+    `Validated ${installedPackage ? "installed package" : "explicit extension"}: /reload-runtime; ${model}:${thinkingLevel} -> reload_runtime -> reload -> automatic continuation -> post_reload_check`,
   );
 } catch (error) {
   primaryError = error;

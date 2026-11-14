@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
@@ -12,6 +12,9 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const workspace = await mkdtemp(join(tmpdir(), "pi-extension-reloader-package-"));
 const packDirectory = join(workspace, "pack");
 const consumerDirectory = join(workspace, "consumer");
+// Match the SDK actually installed for this gate, including --no-save compatibility runs.
+const piVersion = JSON.parse(await readFile(join(root, "node_modules/@earendil-works/pi-coding-agent/package.json"), "utf8")).version;
+const typeboxVersion = JSON.parse(await readFile(join(root, "node_modules/typebox/package.json"), "utf8")).version;
 
 async function run(command, arguments_, cwd) {
   try {
@@ -68,8 +71,8 @@ try {
       "--ignore-scripts",
       "--no-package-lock",
       tarball,
-      "@earendil-works/pi-coding-agent@0.87.1",
-      "typebox@1.3.7",
+      `@earendil-works/pi-coding-agent@${piVersion}`,
+      `typebox@${typeboxVersion}`,
     ],
     consumerDirectory,
   );
@@ -108,7 +111,7 @@ try {
     throw new Error("packed extension did not register reload-runtime and reload_runtime");
   }
 
-  process.stdout.write(`Package smoke passed: ${packResult.name}@${packResult.version}\n`);
+  process.stdout.write(`Package smoke passed: ${packResult.name}@${packResult.version} on Pi ${piVersion} / TypeBox ${typeboxVersion}\n`);
 } finally {
   if (process.env.PI_PACKAGE_SMOKE_KEEP !== "1") {
     await rm(workspace, { recursive: true, force: true });
