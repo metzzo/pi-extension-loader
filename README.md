@@ -11,7 +11,7 @@ It provides two entry points:
 
 ## Requirements
 
-- Pi with the public reload API; tested on 0.87.1, with no upper version bound
+- Pi with the public reload API; tested on pi 0.87.1 and 1.5.2, with no upper version bound
 - Node.js 22.19.0 or newer
 
 The package keeps Pi and TypeBox as `"*"` peer dependencies, as Pi's package documentation requires for bundled extension APIs. Development and packaged-consumer tests pin Pi and TypeBox to the versions used for this release so the release gate does not float with those peers.
@@ -70,7 +70,7 @@ The tool persists the request before returning with `terminate: true`. When Pi e
 
 The settlement boundary matters: reloading inside the tool's `execute()` method would invalidate the extension context before Pi finishes wrapping the tool result. Deferring the command lets the tool and any sibling work finish before Pi replaces the runtime. After `ctx.reload()` completes, the old command frame invokes a callback installed by the fresh extension instance, so `session_start` and `resources_discover` finish before the continuation begins. The automatic continuation then prevents multi-step requests such as “edit, reload, and use the changed tool” from stopping after reload.
 
-Pi 0.84.2 does not expose a separate hook after every extension's `agent_settled` handler has finished, so a later handler can overlap reload dispatch. Pi 0.87.1 defers actions requested during that event until its handlers finish. Neither ordering prevents another extension from starting a notification during the reload lifecycle itself; the follow-up delivery mode handles that overlap. The extension API does not provide acknowledged continuation delivery. If the process exits, the queue is cleared, or prompt preflight fails just after dispatch begins, the saved continuation remains marked as dispatched and is not replayed automatically. A dispatched marker records an attempt, not proof that the next action ran.
+Pi 0.84.2 does not expose a separate hook after every extension's `agent_settled` handler has finished, so a later handler can overlap reload dispatch. Pi 0.87.1 defers actions requested during that event until its handlers finish. Neither ordering prevents another extension from starting a notification during the reload lifecycle itself; the follow-up delivery mode handles that overlap. Pi 1.2.0 and later also count a run as busy during `before_agent_start`; the same follow-up delivery queues the continuation while a notification is still starting. The extension API does not provide acknowledged continuation delivery. If the process exits, the queue is cleared, or prompt preflight fails just after dispatch begins, the saved continuation remains marked as dispatched and is not replayed automatically. A dispatched marker records an attempt, not proof that the next action ran.
 
 Pi collects extension load errors instead of failing the reload, so the continuation can start even though an edited extension was skipped; check Pi's extension error output when expected tools or commands are missing. If this extension itself fails to load after an edit, no continuation is dispatched, and a failed reload in the TUI is reported by Pi without reaching this extension; in both cases the persisted continuation resumes on the next `/reload-runtime`. The automatic continuation is designed for persistent sessions (TUI, RPC); single-shot print or JSON runs may exit before it completes.
 
@@ -88,20 +88,20 @@ npm run release:check
 The gate performs:
 
 - strict TypeScript checking
-- real Pi runtime tests for command and tool registration, automatic continuation during a concurrent notification, delayed resource discovery, intervening STOP, and missing fresh tools
-- a packaged-consumer smoke test against Pi 0.87.1
+- real Pi runtime tests for command and tool registration, automatic continuation during a concurrent notification (including its busy-start window), delayed resource discovery, intervening STOP, and missing fresh tools
+- a packaged-consumer smoke test against the installed development Pi and TypeBox versions (locked to 1.5.2 and 1.3.27)
 - an offline Pi loading smoke test
 - a production-dependency security audit
 
 Run the authenticated end-to-end test separately:
 
 ```bash
-npm run test:e2e
+PI_CODING_AGENT_DIR=/path/to/isolated/agent npm run test:e2e
 ```
 
-It runs the real plugin through Pi RPC using `openai-codex/gpt-5.6-luna` at `low` thinking. It verifies the model calls `reload_runtime`, the command dispatches, a changed extension receives `session_start` with reason `reload`, and the automatically resumed agent calls a tool that exists only after reload.
+Use an isolated Pi environment and the matching executable on `PATH` (or set `PI_EXECUTABLE`). It runs the real plugin through Pi RPC using `openai-codex/gpt-6.1-sol` at `low` thinking. It verifies `/reload-runtime` directly, then that the model calls `reload_runtime`, a changed extension receives `session_start` with reason `reload`, and the automatically resumed agent calls a tool that exists only after reload.
 
-The test copies `auth.json` and `models-store.json` from `~/.pi/agent` into a temporary agent directory, submits one RPC prompt that makes multiple live model calls, and removes the directory afterward. Override the source with `PI_E2E_SOURCE_AGENT_DIR` or the executable with `PI_EXECUTABLE`. Raw RPC and stderr evidence is written under `.test-workspaces/`.
+The test requires `PI_CODING_AGENT_DIR` or `PI_E2E_SOURCE_AGENT_DIR`, symlinks its `auth.json` to preserve shared OAuth locking, copies `models-store.json` into a temporary agent directory, submits one model prompt that makes multiple live calls, and removes the directory afterward. It does not fall back to the live agent directory. To test package discovery after `pi install /absolute/path/to/this/checkout` in the source agent directory, add `PI_E2E_INSTALLED_PACKAGE=1`; this loads only that installed package and the test marker, not unrelated packages. Raw RPC and stderr evidence is written under `.test-workspaces/`.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution guidance and [RELEASING.md](RELEASING.md) for the maintainer checklist.
 
