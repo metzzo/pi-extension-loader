@@ -264,6 +264,7 @@ test("reload_runtime reloads changed resources through the real Pi runtime", asy
   const markerExtension = join(temporaryRoot, "marker.ts");
   const continuationMarker = join(temporaryRoot, "continuation.txt");
   const reloadLifecycleMarker = join(temporaryRoot, "reload-lifecycle.txt");
+  const reason = " \t integration test \n ";
   const continueWith = "Verify the reloaded runtime with reload_test_marker.";
   const continuationPrompt = [
     "Automatic continuation after Pi runtime reload.",
@@ -376,11 +377,11 @@ export default function (pi) {
     );
 
     const toolResult = await reloadTool.execute("reload-test", {
-      reason: "integration test",
+      reason,
       continueWith,
     });
     assert.equal(toolResult.details.command, "/reload-runtime");
-    assert.equal(toolResult.details.reason, "integration test");
+    assert.equal(toolResult.details.reason, reason.trim(), "the tool trims surrounding whitespace from the reload reason");
     assert.equal(toolResult.details.continueWith, continueWith);
     assert.match(toolResult.content[0].text, /reload/i);
     assert.match(toolResult.content[0].text, /continue/i);

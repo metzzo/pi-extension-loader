@@ -306,7 +306,7 @@ export default function (pi) {
   ]);
   assert.equal(toolEvent.isError, false);
   const reloadCall = rpc.events.find((event) => event.type === "tool_execution_start" && event.toolName === "reload_runtime");
-  assert.equal(toolEvent.result.details.reason, reloadCall.args.reason, "the tool preserves the model's reload reason");
+  assert.equal(toolEvent.result.details.reason, reloadCall.args.reason.trim(), "the tool trims surrounding whitespace from the model's reload reason");
   assert.equal(toolEvent.result.details.continueWith, continueWith);
   assert.equal(toolEvent.result.terminate, true);
   assert.equal(postReloadToolEvent.isError, false);
